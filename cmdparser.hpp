@@ -1,6 +1,6 @@
 /*
   This file is part of the C++ CmdParser utility.
-  Copyright (c) 2015 - 2016 Florian Rappl
+  Copyright (c) 2015 - 2019 Florian Rappl
 */
 
 #pragma once
@@ -12,6 +12,28 @@
 #include <functional>
 
 namespace cli {
+	/// Class used to wrap integer types to specify desired numerical base for specific argument parsing
+	template <typename T, int numericalBase = 0> class NumericalBase {
+	public:
+
+		/// This constructor required for correct AgrumentCountChecker initialization
+		NumericalBase() : value(0), base(numericalBase) {}
+
+		/// This constructor required for default value initialization
+		/// \param val comes from default value
+		NumericalBase(T val) : value(val), base(numericalBase) {}
+
+		operator T () const {
+			return this->value;
+		}
+		operator T * () {
+			return this->value;
+		}
+
+		T             value;
+		unsigned  int base;
+	};
+
 	struct CallbackArgs {
 		const std::vector<std::string>& arguments;
 		std::ostream& output;
@@ -21,14 +43,16 @@ namespace cli {
 	private:
 		class CmdBase {
 		public:
-			explicit CmdBase(const std::string& name, const std::string& alternative, const std::string& description, bool required) : 
+			explicit CmdBase(const std::string& name, const std::string& alternative, const std::string& description, bool required, bool dominant, bool variadic) :
 				name(name),
 				command(name.size() > 0 ? "-" + name : ""),
 				alternative(alternative.size() > 0 ? "--" + alternative : ""),
 				description(description),
 				required(required),
 				handled(false),
-				arguments({}) {
+				arguments({}),
+				dominant(dominant),
+				variadic(variadic) {
 			}
 
 			virtual ~CmdBase() {
@@ -41,6 +65,8 @@ namespace cli {
 			bool required;
 			bool handled;
 			std::vector<std::string> arguments;
+			bool const dominant;
+			bool const variadic;
 
 			virtual std::string print_value() const = 0;
 			virtual bool parse(std::ostream& output, std::ostream& error) = 0;
@@ -51,10 +77,28 @@ namespace cli {
 		};
 
 		template<typename T>
+		struct ArgumentCountChecker
+		{
+			static constexpr bool Variadic = false;
+		};
+
+		template<typename T>
+		struct ArgumentCountChecker<cli::NumericalBase<T>>
+		{
+			static constexpr bool Variadic = false;
+		};
+
+		template<typename T>
+		struct ArgumentCountChecker<std::vector<T>>
+		{
+			static constexpr bool Variadic = true;
+		};
+
+		template<typename T>
 		class CmdFunction final : public CmdBase {
 		public:
-			explicit CmdFunction(const std::string& name, const std::string& alternative, const std::string& description, bool required) : 
-				CmdBase(name, alternative, description, required) {
+			explicit CmdFunction(const std::string& name, const std::string& alternative, const std::string& description, bool required, bool dominant) :
+				CmdBase(name, alternative, description, required, dominant, ArgumentCountChecker<T>::Variadic) {
 			}
 
 			virtual bool parse(std::ostream& output, std::ostream& error) {
@@ -78,11 +122,11 @@ namespace cli {
 		template<typename T>
 		class CmdArgument final : public CmdBase {
 		public:
-			explicit CmdArgument(const std::string& name, const std::string& alternative, const std::string& description, bool required) : 
-				CmdBase(name, alternative, description, required) {
+			explicit CmdArgument(const std::string& name, const std::string& alternative, const std::string& description, bool required, bool dominant) :
+				CmdBase(name, alternative, description, required, dominant, ArgumentCountChecker<T>::Variadic) {
 			}
 
-			virtual bool parse(std::ostream& output, std::ostream& error) {
+			virtual bool parse(std::ostream&, std::ostream&) {
 				try {
 					value = Parser::parse(arguments, value);
 					return true;
@@ -98,11 +142,11 @@ namespace cli {
 			T value;
 		};
 
-		static int parse(const std::vector<std::string>& elements, const int&) {
+		static int parse(const std::vector<std::string>& elements, const int&, int numberBase = 0) {
 			if (elements.size() != 1)
 				throw std::bad_cast();
 
-			return std::stoi(elements[0]);
+			return std::stoi(elements[0], 0, numberBase);
 		}
 
 		static bool parse(const std::vector<std::string>& elements, const bool& defval) {
@@ -133,25 +177,32 @@ namespace cli {
 			return std::stold(elements[0]);
 		}
 
-		static unsigned int parse(const std::vector<std::string>& elements, const unsigned int&) {
+		static unsigned int parse(const std::vector<std::string>& elements, const unsigned int&, int numberBase = 0) {
 			if (elements.size() != 1)
 				throw std::bad_cast();
 
-			return static_cast<unsigned int>(std::stoul(elements[0]));
+			return static_cast<unsigned int>(std::stoul(elements[0], 0, numberBase));
 		}
 
-		static unsigned long parse(const std::vector<std::string>& elements, const unsigned long&) {
+		static unsigned long parse(const std::vector<std::string>& elements, const unsigned long&, int numberBase = 0) {
 			if (elements.size() != 1)
 				throw std::bad_cast();
 
-			return std::stoul(elements[0]);
+			return std::stoul(elements[0], 0, numberBase);
 		}
 
-		static long parse(const std::vector<std::string>& elements, const long&) {
+		static unsigned long long parse(const std::vector<std::string>& elements, const unsigned long long&, int numberBase = 0) {
 			if (elements.size() != 1)
 				throw std::bad_cast();
 
-			return std::stol(elements[0]);
+			return std::stoull(elements[0], 0, numberBase);
+		}
+
+		static long parse(const std::vector<std::string>& elements, const long&, int numberBase = 0) {
+			if (elements.size() != 1)
+				throw std::bad_cast();
+
+			return std::stol(elements[0], 0, numberBase);
 		}
 
 		static std::string parse(const std::vector<std::string>& elements, const std::string&) {
@@ -163,7 +214,7 @@ namespace cli {
 
 		template<class T>
 		static std::vector<T> parse(const std::vector<std::string>& elements, const std::vector<T>&) {
-			const T defval = 0;
+			const T defval = T();
 			std::vector<T> values { };
 			std::vector<std::string> buffer(1);
 
@@ -175,9 +226,28 @@ namespace cli {
 			return values;
 		}
 
+		template <typename T> static T parse(const std::vector<std::string>& elements, const NumericalBase<T>& wrapper) {
+			return parse(elements, wrapper.value, 0);
+		}
+
+		/// Specialization for number wrapped into numerical base
+		/// \tparam T base type of the argument
+		/// \tparam base numerical base
+		/// \param elements
+		/// \param wrapper
+		/// \return parsed number
+		template <typename T, int base> static T parse(const std::vector<std::string>& elements, const NumericalBase<T, base>& wrapper) {
+			return parse(elements, wrapper.value, wrapper.base);
+		}
+
 		template<class T>
 		static std::string stringify(const T& value) {
 			return std::to_string(value);
+		}
+
+		template<class T, int base>
+		static std::string stringify(const NumericalBase<T, base>& wrapper) {
+			return std::to_string(wrapper.value);
 		}
 
 		template<class T>
@@ -198,7 +268,7 @@ namespace cli {
 		}
 
 	public:
-		explicit Parser(int argc, const char** argv) : 
+		explicit Parser(int argc, const char** argv) :
 			_appname(argv[0]) {
 			for (int i = 1; i < argc; ++i) {
 				_arguments.push_back(argv[i]);
@@ -206,7 +276,7 @@ namespace cli {
 			enable_help();
 		}
 
-		explicit Parser(int argc, char** argv) : 
+		explicit Parser(int argc, char** argv) :
 			_appname(argv[0]) {
 			for (int i = 1; i < argc; ++i) {
 				_arguments.push_back(argv[i]);
@@ -215,7 +285,7 @@ namespace cli {
 		}
 
 		~Parser() {
-			for (int i = 0, n = _commands.size(); i < n; ++i) {
+			for (size_t i = 0, n = _commands.size(); i < n; ++i) {
 				delete _commands[i];
 			}
 		}
@@ -235,7 +305,7 @@ namespace cli {
 				args.output << this->usage();
 				exit(0);
 				return false;
-			}));
+			}), "", true);
 		}
 
 		void disable_help() {
@@ -249,26 +319,26 @@ namespace cli {
 
 		template<typename T>
 		void set_default(bool is_required, const std::string& description = "") {
-			auto command = new CmdArgument<T> { "", "", description, is_required };
+			auto command = new CmdArgument<T> { "", "", description, is_required, false };
 			_commands.push_back(command);
 		}
 
 		template<typename T>
-		void set_required(const std::string& name, const std::string& alternative, const std::string& description = "") {
-			auto command = new CmdArgument<T> { name, alternative, description, true };
+		void set_required(const std::string& name, const std::string& alternative, const std::string& description = "", bool dominant = false) {
+			auto command = new CmdArgument<T> { name, alternative, description, true, dominant };
 			_commands.push_back(command);
 		}
 
 		template<typename T>
-		void set_optional(const std::string& name, const std::string& alternative, T defaultValue, const std::string& description = "") {
-			auto command = new CmdArgument<T> { name, alternative, description, false };
+		void set_optional(const std::string& name, const std::string& alternative, T defaultValue, const std::string& description = "", bool dominant = false) {
+			auto command = new CmdArgument<T> { name, alternative, description, false, dominant };
 			command->value = defaultValue;
 			_commands.push_back(command);
 		}
 
 		template<typename T>
-		void set_callback(const std::string& name, const std::string& alternative, std::function<T(CallbackArgs&)> callback, const std::string& description = "") {
-			auto command = new CmdFunction<T> { name, alternative, description, false };
+		void set_callback(const std::string& name, const std::string& alternative, std::function<T(CallbackArgs&)> callback, const std::string& description = "", bool dominant = false) {
+			auto command = new CmdFunction<T> { name, alternative, description, false, dominant };
 			command->callback = callback;
 			_commands.push_back(command);
 		}
@@ -291,7 +361,7 @@ namespace cli {
 			if (_arguments.size() > 0) {
 				auto current = find_default();
 
-				for (int i = 0, n = _arguments.size(); i < n; ++i) {
+				for (size_t i = 0, n = _arguments.size(); i < n; ++i) {
 					auto isarg = _arguments[i].size() > 0 && _arguments[i][0] == '-';
 					auto associated = isarg ? find(_arguments[i]) : nullptr;
 
@@ -303,10 +373,28 @@ namespace cli {
 						return false;
 					} else {
 						current->arguments.push_back(_arguments[i]);
+						current->handled = true;
+						if (!current->variadic)
+						{
+							// If the current command is not variadic, then no more arguments
+							// should be added to it. In this case, switch back to the default
+							// command.
+							current = find_default();
+						}
 					}
 				}
 			}
 
+			// First, parse dominant arguments since they succeed even if required
+			// arguments are missing.
+			for (auto command : _commands) {
+				if (command->handled && command->dominant && !command->parse(output, error)) {
+					error << howto_use(command);
+					return false;
+				}
+			}
+
+			// Next, check for any missing arguments.
 			for (auto command : _commands) {
 				if (command->required && !command->handled) {
 					error << howto_required(command);
@@ -314,8 +402,9 @@ namespace cli {
 				}
 			}
 
+			// Finally, parse all remaining arguments.
 			for (auto command : _commands) {
-				if (command->handled && !command->parse(output, error)) {
+				if (command->handled && !command->dominant && !command->parse(output, error)) {
 					error << howto_use(command);
 					return false;
 				}
@@ -393,7 +482,7 @@ namespace cli {
 			ss << "Available parameters:\n\n";
 
 			for (const auto& command : _commands) {
-				ss << "  " << command->command << "\t" << command->alternative; 
+				ss << "  " << command->command << "\t" << command->alternative;
 
 				if (command->required == true) {
 					ss << "\t(required)";
@@ -412,7 +501,7 @@ namespace cli {
 		}
 
 		void print_help(std::stringstream& ss) const {
-			if (has_help())  {
+			if (has_help()) {
 				ss << "For more help use --help or -h.\n";
 			}
 		}
